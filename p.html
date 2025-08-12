@@ -1,32 +1,62 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<title>Player HLS</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Player HLS (autoplay)</title>
+  <style>
+    body { margin: 0; background:#000; display:grid; place-items:center; height:100dvh; }
+    video { width: min(100vw, 900px); height:auto; background:#000; }
+    #tap { position:fixed; inset:auto 1rem 1rem auto; padding:.6rem .8rem; font:14px/1.2 system-ui; border-radius:10px; border:0; }
+    #tap { display:none; }
+  </style>
 </head>
-<body style="margin: 0">
-  <video id="video" controls style="width: 100%;"></video>
+<body>
+  <video id="video" controls muted playsinline></video>
+  <button id="tap">Tocar</button>
+
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script>
-    // Pega a URL do parâmetro ?url=...
-    const params = new URLSearchParams(window.location.search);
-    const videoSrc = params.get('url');
+    const params = new URLSearchParams(location.search);
+    const src = params.get('url');
+    const video = document.getElementById('video');
+    const tap = document.getElementById('tap');
 
-    if (!videoSrc) {
-      alert("Parâmetro 'url' não encontrado na URL da página.");
+    if (!src) {
+      console.log("Parâmetro 'url' não encontrado. Ex: ?url=https://.../playlist.m3u8");
     } else {
-      const video = document.getElementById('video');
+      // garantir requisitos de autoplay
+      video.muted = true;
+      video.setAttribute('muted', '');
+      video.playsInline = true;
+
+      const start = async () => {
+        try {
+          await video.play(); // tenta tocar (se já tiver src carregado)
+          tap.style.display = 'none';
+        } catch (e) {
+          // se o navegador bloquear, mostra botão para tocar com 1 clique
+          tap.style.display = 'inline-block';
+        }
+      };
 
       if (Hls.isSupported()) {
-        const hls = new Hls();
-        hls.loadSource(videoSrc);
+        const hls = new Hls({ autoStartLoad: true });
+        hls.loadSource(src);
         hls.attachMedia(video);
+        video.addEventListener('canplay', start, { once: true });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         // Safari / iOS
-        video.src = videoSrc;
+        video.src = src;
+        video.addEventListener('canplay', start, { once: true });
+      } else {
+        alert("Seu navegador não suporta HLS.");
       }
+
+      tap.addEventListener('click', async () => {
+        try { await video.play(); tap.style.display = 'none'; } catch {}
+      });
     }
   </script>
 </body>
 </html>
-
