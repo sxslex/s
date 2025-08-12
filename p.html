@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Player HLS</title>
+</head>
+<body>
+  <video id="video" controls width="640" height="360"></video>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script>
+    // Pega a URL do parâmetro ?url=...
+    const params = new URLSearchParams(window.location.search);
+    const videoSrc = params.get('url');
+
+    if (!videoSrc) {
+      alert("Parâmetro 'url' não encontrado na URL da página.");
+    } else {
+      const video = document.getElementById('video');
+
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(videoSrc);
+        hls.attachMedia(video);
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari / iOS
+        video.src = videoSrc;
+      }
+    }
+  </script>
+</body>
+</html>
+
