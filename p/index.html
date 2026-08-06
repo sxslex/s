@@ -74,22 +74,6 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.1.200/build/pdf.worker.mjs";
 
-    /*
-      CONFIGURAÇÃO PARA MD5
-
-      Quando ?u= possuir exatamente 32 caracteres hexadecimais, ele será considerado MD5.
-
-      Opção A: definir um padrão direto de URL:
-        MD5_URL_TEMPLATE = "https://meu-bucket.s3.amazonaws.com/pdfs/{md5}.pdf";
-
-      Opção B: consultar uma API que devolva JSON no formato { "url": "https://...pdf" }:
-        MD5_RESOLVER_ENDPOINT = "https://api.exemplo.com/pdf/resolve?md5={md5}";
-
-      Se nenhuma opção for configurada, um MD5 isolado não pode ser convertido em URL.
-    */
-    const MD5_URL_TEMPLATE = "";
-    const MD5_RESOLVER_ENDPOINT = "";
-
     const params = new URLSearchParams(location.search);
     const input = (params.get("u") || "").trim();
 
@@ -121,55 +105,74 @@
       status.hidden = true;
     }
 
-    function isMd5(value) {
-      return /^[a-f0-9]{32}$/i.test(value);
+    function reverseString(value) {
+      try {
+        return Array.from(value).reverse().join("");
+      } catch {
+        return null;
+      }
+    }
+
+    function startsWithHttp(value) {
+      try {
+        return /^https?:\/\//i.test(value.trim());
+      } catch {
+        return false;
+      }
+    }
+
+    function decodeBase64(value) {
+      try {
+        // Aceita Base64 tradicional e Base64 URL-safe.
+        let normalized = value.trim().replace(/-/g, "+").replace(/_/g, "/");
+        normalized += "=".repeat((4 - normalized.length % 4) % 4);
+
+        const binary = atob(normalized);
+        const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+        return new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+      } catch {
+        return null;
+      }
     }
 
     function validatePdfUrl(value) {
       let parsed;
       try {
-        parsed = new URL(value, location.href);
+        parsed = new URL(value.trim());
       } catch {
-        throw new Error("O parâmetro 'u' não contém uma URL válida.");
+        throw new Error("A URL encontrada não é válida.");
       }
 
-      if (!['http:', 'https:'].includes(parsed.protocol)) {
+      if (!["http:", "https:"].includes(parsed.protocol)) {
         throw new Error("Somente URLs HTTP ou HTTPS são permitidas.");
       }
 
       return parsed.href;
     }
 
-    async function resolvePdfSource(value) {
+    function resolvePdfSource(value) {
       if (!value) {
-        throw new Error("Informe o PDF usando ?u=URL_DO_PDF ou ?u=MD5.");
+        throw new Error("Informe o PDF");
       }
 
-      if (!isMd5(value)) {
-        return validatePdfUrl(value);
-      }
+      const reversed = reverseString(value);
+      const candidates = [
+        { description: "URL direta", value },
+        { description: "string invertida", value: reversed },
+        { description: "Base64", value: decodeBase64(value) },
+        { description: "string invertida em Base64", value: decodeBase64(reversed) },
+        { description: "string Base64 em invertida", value: reverseString(decodeBase64(value)) }
+      ];
 
-      const md5 = value.toLowerCase();
-
-      if (MD5_URL_TEMPLATE) {
-        return validatePdfUrl(MD5_URL_TEMPLATE.replace("{md5}", encodeURIComponent(md5)));
-      }
-
-      if (MD5_RESOLVER_ENDPOINT) {
-        const endpoint = MD5_RESOLVER_ENDPOINT.replace("{md5}", encodeURIComponent(md5));
-        const response = await fetch(endpoint, { credentials: "omit" });
-        if (!response.ok) {
-          throw new Error(`Não foi possível resolver o MD5. HTTP ${response.status}.`);
+      for (const candidate of candidates) {
+        if (candidate.value && startsWithHttp(candidate.value)) {
+          console.info(`PDF identificado por: ${candidate.description}`);
+          return validatePdfUrl(candidate.value);
         }
-        const data = await response.json();
-        if (!data?.url) {
-          throw new Error("A API de resolução não retornou o campo 'url'.");
-        }
-        return validatePdfUrl(data.url);
       }
 
       throw new Error(
-        "Foi recebido um MD5, mas nenhum MD5_URL_TEMPLATE ou MD5_RESOLVER_ENDPOINT foi configurado no index.html."
+        "O parâmetro 'u' não contém uma URL HTTP/HTTPS direta, invertida, codificada em Base64 ou invertida e codificada em Base64."
       );
     }
 
@@ -288,9 +291,10 @@
     });
 
     async function start() {
+      var pdfUrl = input;
       try {
-        const pdfUrl = await resolvePdfSource(input);
-        showStatus("Carregando PDF…", pdfUrl);
+        pdfUrl = resolvePdfSource(input);
+        showStatus("Carregando PDF…");
 
         const loadingTask = pdfjsLib.getDocument({
           url: pdfUrl,
@@ -306,14 +310,13 @@
         fitToWidth();
       } catch (error) {
         console.error(error);
-        showStatus(
-          "Não foi possível abrir o PDF",
-          `${error?.message || error} Verifique se o servidor do PDF permite CORS para este domínio.`
+        showStatus("Abrir o arquivo");
+        statusDetail.innerHTML = (
+          `<a href="${pdfUrl}" target="_blank"><button id="open-button" tabindex="1">Abrir</button></a>`
         );
         updateToolbar();
       }
     }
-
     start();
   </script>
 </body>
