@@ -9,8 +9,8 @@ const CleanCSS = require("clean-css");
 const { minify: minifyHtml } = require("html-minifier-terser");
 
 const ROOT = path.resolve(__dirname, "..");
-const OUT_DIR = path.join(ROOT, "build");
-const IGNORE_DIRS = new Set(["node_modules", ".git", "build", ".idea", ".ai-jail"]);
+const OUT_DIR = path.join(ROOT, "docs");
+const IGNORE_DIRS = new Set(["node_modules", ".git", "docs", ".idea", ".ai-jail"]);
 
 const OBFUSCATOR_OPTIONS = {
   compact: true,
