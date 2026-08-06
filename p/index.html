@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Visualizador de PDF</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #16181c; color: #f4f4f5; }
+    #app { display: grid; grid-template-rows: 56px 1fr; height: 100%; }
+    #toolbar {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      padding: 8px 12px; background: #23262b; border-bottom: 1px solid #343840;
+      user-select: none;
+    }
+    button {
+      min-width: 42px; height: 38px; border: 1px solid #454b55; border-radius: 8px;
+      background: #30343a; color: #fff; cursor: pointer; font-size: 15px;
+    }
+    button:hover:not(:disabled) { background: #3b4048; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #pageInfo { min-width: 120px; text-align: center; font-variant-numeric: tabular-nums; }
+    #viewerContainer { overflow: auto; padding: 24px 12px 48px; }
+    #pages { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+    .page-wrap { position: relative; background: white; box-shadow: 0 4px 22px rgba(0,0,0,.45); }
+    canvas { display: block; max-width: none; }
+    #status {
+      position: fixed; inset: 56px 0 0; display: grid; place-items: center;
+      padding: 24px; text-align: center; background: #16181c; z-index: 10;
+    }
+    #status[hidden] { display: none; }
+    #statusBox { max-width: 720px; }
+    #statusTitle { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    #statusDetail { color: #b7bdc8; line-height: 1.5; overflow-wrap: anywhere; }
+    @media (max-width: 600px) {
+      #toolbar { gap: 6px; }
+      button { min-width: 38px; }
+      #pageInfo { min-width: 92px; font-size: 14px; }
+    }
+    @media print {
+      html, body { display: none !important; }
+    }
+  </style>
+</head>
+<body oncontextmenu="return false">
+  <main id="app">
+    <header id="toolbar" aria-label="Controles do PDF">
+      <button id="prev" type="button" title="Página anterior" aria-label="Página anterior">◀</button>
+      <span id="pageInfo">Página 0 de 0</span>
+      <button id="next" type="button" title="Próxima página" aria-label="Próxima página">▶</button>
+      <button id="zoomOut" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button>
+      <button id="zoomIn" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button>
+      <button id="fit" type="button" title="Ajustar à largura" aria-label="Ajustar à largura">↔</button>
+    </header>
+
+    <section id="viewerContainer" tabindex="0">
+      <div id="pages"></div>
+    </section>
+  </main>
+
+  <section id="status">
+    <div id="statusBox">
+      <div id="statusTitle">Carregando PDF…</div>
+      <div id="statusDetail"></div>
+    </div>
+  </section>
+
+  <script type="module">
+    import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.1.200/build/pdf.mjs";
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.1.200/build/pdf.worker.mjs";
+
+    /*
+      CONFIGURAÇÃO PARA MD5
+
+      Quando ?u= possuir exatamente 32 caracteres hexadecimais, ele será considerado MD5.
+
+      Opção A: definir um padrão direto de URL:
+        MD5_URL_TEMPLATE = "https://meu-bucket.s3.amazonaws.com/pdfs/{md5}.pdf";
+
+      Opção B: consultar uma API que devolva JSON no formato { "url": "https://...pdf" }:
+        MD5_RESOLVER_ENDPOINT = "https://api.exemplo.com/pdf/resolve?md5={md5}";
+
+      Se nenhuma opção for configurada, um MD5 isolado não pode ser convertido em URL.
+    */
+    const MD5_URL_TEMPLATE = "";
+    const MD5_RESOLVER_ENDPOINT = "";
+
+    const params = new URLSearchParams(location.search);
+    const input = (params.get("u") || "").trim();
+
+    const status = document.querySelector("#status");
+    const statusTitle = document.querySelector("#statusTitle");
+    const statusDetail = document.querySelector("#statusDetail");
+    const pagesElement = document.querySelector("#pages");
+    const viewerContainer = document.querySelector("#viewerContainer");
+    const pageInfo = document.querySelector("#pageInfo");
+    const prevButton = document.querySelector("#prev");
+    const nextButton = document.querySelector("#next");
+    const zoomOutButton = document.querySelector("#zoomOut");
+    const zoomInButton = document.querySelector("#zoomIn");
+    const fitButton = document.querySelector("#fit");
+
+    let pdfDocument = null;
+    let scale = 1.25;
+    let currentPage = 1;
+    let renderGeneration = 0;
+    let pageWrappers = [];
+
+    function showStatus(title, detail = "") {
+      statusTitle.textContent = title;
+      statusDetail.textContent = detail;
+      status.hidden = false;
+    }
+
+    function hideStatus() {
+      status.hidden = true;
+    }
+
+    function isMd5(value) {
+      return /^[a-f0-9]{32}$/i.test(value);
+    }
+
+    function validatePdfUrl(value) {
+      let parsed;
+      try {
+        parsed = new URL(value, location.href);
+      } catch {
+        throw new Error("O parâmetro 'u' não contém uma URL válida.");
+      }
+
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error("Somente URLs HTTP ou HTTPS são permitidas.");
+      }
+
+      return parsed.href;
+    }
+
+    async function resolvePdfSource(value) {
+      if (!value) {
+        throw new Error("Informe o PDF usando ?u=URL_DO_PDF ou ?u=MD5.");
+      }
+
+      if (!isMd5(value)) {
+        return validatePdfUrl(value);
+      }
+
+      const md5 = value.toLowerCase();
+
+      if (MD5_URL_TEMPLATE) {
+        return validatePdfUrl(MD5_URL_TEMPLATE.replace("{md5}", encodeURIComponent(md5)));
+      }
+
+      if (MD5_RESOLVER_ENDPOINT) {
+        const endpoint = MD5_RESOLVER_ENDPOINT.replace("{md5}", encodeURIComponent(md5));
+        const response = await fetch(endpoint, { credentials: "omit" });
+        if (!response.ok) {
+          throw new Error(`Não foi possível resolver o MD5. HTTP ${response.status}.`);
+        }
+        const data = await response.json();
+        if (!data?.url) {
+          throw new Error("A API de resolução não retornou o campo 'url'.");
+        }
+        return validatePdfUrl(data.url);
+      }
+
+      throw new Error(
+        "Foi recebido um MD5, mas nenhum MD5_URL_TEMPLATE ou MD5_RESOLVER_ENDPOINT foi configurado no index.html."
+      );
+    }
+
+    function updateToolbar() {
+      const total = pdfDocument?.numPages || 0;
+      pageInfo.textContent = `Página ${currentPage} de ${total}`;
+      prevButton.disabled = !pdfDocument || currentPage <= 1;
+      nextButton.disabled = !pdfDocument || currentPage >= total;
+      zoomOutButton.disabled = !pdfDocument || scale <= 0.5;
+      zoomInButton.disabled = !pdfDocument || scale >= 3;
+      fitButton.disabled = !pdfDocument;
+    }
+
+    async function renderAllPages() {
+      const generation = ++renderGeneration;
+      pagesElement.replaceChildren();
+      pageWrappers = [];
+      showStatus("Renderizando PDF…");
+
+      const outputScale = Math.min(window.devicePixelRatio || 1, 2);
+
+      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+        if (generation !== renderGeneration) return;
+
+        const page = await pdfDocument.getPage(pageNumber);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        const wrapper = document.createElement("div");
+        const context = canvas.getContext("2d", { alpha: false });
+
+        wrapper.className = "page-wrap";
+        wrapper.dataset.page = String(pageNumber);
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        wrapper.appendChild(canvas);
+        pagesElement.appendChild(wrapper);
+        pageWrappers.push(wrapper);
+
+        await page.render({
+          canvasContext: context,
+          viewport,
+          transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0]
+        }).promise;
+      }
+
+      hideStatus();
+      updateCurrentPageFromScroll();
+    }
+
+    function goToPage(pageNumber) {
+      const target = pageWrappers[pageNumber - 1];
+      if (!target) return;
+      currentPage = pageNumber;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      updateToolbar();
+    }
+
+    function updateCurrentPageFromScroll() {
+      if (!pageWrappers.length) return;
+      const containerTop = viewerContainer.getBoundingClientRect().top;
+      let bestPage = 1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      pageWrappers.forEach((wrapper, index) => {
+        const distance = Math.abs(wrapper.getBoundingClientRect().top - containerTop - 12);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPage = index + 1;
+        }
+      });
+
+      currentPage = bestPage;
+      updateToolbar();
+    }
+
+    function fitToWidth() {
+      if (!pdfDocument) return;
+      pdfDocument.getPage(currentPage).then(page => {
+        const unscaled = page.getViewport({ scale: 1 });
+        const availableWidth = Math.max(viewerContainer.clientWidth - 32, 200);
+        scale = Math.min(Math.max(availableWidth / unscaled.width, 0.5), 3);
+        renderAllPages().then(() => goToPage(currentPage));
+      });
+    }
+
+    prevButton.addEventListener("click", () => goToPage(Math.max(1, currentPage - 1)));
+    nextButton.addEventListener("click", () => goToPage(Math.min(pdfDocument.numPages, currentPage + 1)));
+    zoomOutButton.addEventListener("click", async () => {
+      scale = Math.max(0.5, +(scale - 0.25).toFixed(2));
+      await renderAllPages();
+      goToPage(currentPage);
+    });
+    zoomInButton.addEventListener("click", async () => {
+      scale = Math.min(3, +(scale + 0.25).toFixed(2));
+      await renderAllPages();
+      goToPage(currentPage);
+    });
+    fitButton.addEventListener("click", fitToWidth);
+    viewerContainer.addEventListener("scroll", updateCurrentPageFromScroll, { passive: true });
+
+    // Bloqueios de interface: são apenas barreiras de conveniência, não proteção absoluta.
+    document.addEventListener("keydown", event => {
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && ["p", "s", "u"].includes(key)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+
+    window.addEventListener("beforeprint", event => {
+      event.preventDefault?.();
+      alert("A impressão deste documento está desabilitada.");
+    });
+
+    async function start() {
+      try {
+        const pdfUrl = await resolvePdfSource(input);
+        showStatus("Carregando PDF…", pdfUrl);
+
+        const loadingTask = pdfjsLib.getDocument({
+          url: pdfUrl,
+          withCredentials: false,
+          disableAutoFetch: false,
+          disableStream: false
+        });
+
+        pdfDocument = await loadingTask.promise;
+        currentPage = 1;
+        updateToolbar();
+        await renderAllPages();
+        fitToWidth();
+      } catch (error) {
+        console.error(error);
+        showStatus(
+          "Não foi possível abrir o PDF",
+          `${error?.message || error} Verifique se o servidor do PDF permite CORS para este domínio.`
+        );
+        updateToolbar();
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>
